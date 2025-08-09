@@ -1,5 +1,4 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
+
 """
 TS Cleaner - обработчик PDF файлов для организации по ISIN кодам.
 
@@ -15,7 +14,7 @@ import re
 import shutil
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Iterable
+from typing import Optional
 
 try:
     import PyPDF2
@@ -38,10 +37,52 @@ DATA_IN = PROJECT_ROOT / "Data_in"
 DATA_WORK = PROJECT_ROOT / "Data_work"
 TS_ARCHIVE = PROJECT_ROOT / "TS_archive"
 
-# Строгий паттерн ISIN
-ISIN_PATTERN = re.compile(r'\b[A-Z]{2}[A-Z0-9]{9}\d\b')
+# Строгий паттерн ISIN (игнорируем регистр, улучшенные границы)
+ISIN_PATTERN = re.compile(
+    r'(?<![A-Z0-9])[A-Z]{2}[A-Z0-9]{9}\d(?![A-Z0-9])',
+    re.IGNORECASE
+)
+
 # Расширенный паттерн для поиска ISIN с возможными разрывами
-ISIN_FLEXIBLE_PATTERN = re.compile(r'\b[A-Z]{2}[\s\-]*[A-Z0-9][\s\-]*[A-Z0-9][\s\-]*[A-Z0-9][\s\-]*[A-Z0-9][\s\-]*[A-Z0-9][\s\-]*[A-Z0-9][\s\-]*[A-Z0-9][\s\-]*[A-Z0-9][\s\-]*[A-Z0-9][\s\-]*\d\b')
+ISIN_FLEXIBLE_PATTERN = re.compile(
+    r'(?<![A-Z0-9])[A-Z]{2}(?:[\s\-]*[A-Z0-9]){9}[\s\-]*\d(?![A-Z0-9])',
+    re.IGNORECASE
+)
+
+
+def normalize_isin_candidate(s: str) -> str:
+    """Убирает пробелы/дефисы и приводит к верхнему регистру для валидации."""
+    return re.sub(r'[\s\-]+', '', s).upper()
+
+
+def isin_checksum_valid(code: str) -> bool:
+    """
+    Проверка корректности ISIN по стандарту (Luhn).
+    
+    Args:
+        code: ISIN код для проверки
+        
+    Returns:
+        bool: True если контрольная сумма верна
+    """
+    if not re.fullmatch(r'[A-Z]{2}[A-Z0-9]{9}\d', code):
+        return False
+
+    # A->10, B->11, ..., Z->35
+    expanded = ''.join(str(ord(c) - 55) if c.isalpha() else c for c in code)
+
+    # Luhn: справа налево удваиваем каждую вторую цифру
+    total = 0
+    double = False
+    for ch in reversed(expanded):
+        d = int(ch)
+        if double:
+            d *= 2
+            if d > 9:
+                d -= 9
+        total += d
+        double = not double
+    return total % 10 == 0
 
 
 def ensure_ts_folder(data_in: Path) -> Path:
@@ -92,7 +133,7 @@ def extract_isin_from_name(name: str) -> Optional[str]:
     Пытается извлечь ISIN из имени файла.
     
     Удаляет пробелы/дефисы внутри кандидат-строки перед проверкой 
-    строгим паттерном.
+    строгим паттерном и контрольной суммой.
     
     Args:
         name: Имя файла (без расширения или с ним)
@@ -100,24 +141,21 @@ def extract_isin_from_name(name: str) -> Optional[str]:
     Returns:
         Optional[str]: Найденный ISIN или None
     """
-    # Убираем расширение если есть
-    clean_name = Path(name).stem
-    
-    # Сначала ищем потенциальные ISIN с разрывами
-    flexible_matches = ISIN_FLEXIBLE_PATTERN.findall(clean_name)
-    
-    for match in flexible_matches:
-        # Нормализуем: убираем пробелы и дефисы
-        normalized = re.sub(r'[\s\-]+', '', match)
-        # Проверяем строгим паттерном
-        if ISIN_PATTERN.match(normalized):
-            return normalized
-    
-    # Если гибкий поиск не дал результатов, ищем прямые совпадения
-    direct_matches = ISIN_PATTERN.findall(clean_name)
-    if direct_matches:
-        return direct_matches[0]
-    
+    clean = Path(name).stem
+
+    # 1) гибкий поиск (с разрывами) + нормализация
+    for m in ISIN_FLEXIBLE_PATTERN.findall(clean):
+        cand = normalize_isin_candidate(m)
+        if ISIN_PATTERN.search(cand) and isin_checksum_valid(cand):
+            return cand
+
+    # 2) прямой поиск (без разрывов), регистр уже игнорируем
+    m2 = ISIN_PATTERN.search(clean)
+    if m2:
+        cand = normalize_isin_candidate(m2.group(0))
+        if isin_checksum_valid(cand):
+            return cand
+
     return None
 
 
@@ -125,7 +163,8 @@ def extract_isin_from_pdf(pdf_path: Path) -> Optional[str]:
     """
     Читает текст PDF через PyPDF2 и возвращает первый валидный ISIN.
     
-    Нормализует возможные разрывы внутри ISIN (убирает пробелы/дефисы).
+    Нормализует возможные разрывы внутри ISIN (убирает пробелы/дефисы)
+    и проверяет контрольную сумму.
     
     Args:
         pdf_path: Путь к PDF файлу
@@ -134,40 +173,32 @@ def extract_isin_from_pdf(pdf_path: Path) -> Optional[str]:
         Optional[str]: Найденный ISIN или None
     """
     try:
-        with open(pdf_path, 'rb') as file:
-            reader = PyPDF2.PdfReader(file)
-            text = ""
-            
-            # Извлекаем текст со всех страниц
-            for page_num in range(len(reader.pages)):
+        with open(pdf_path, 'rb') as f:
+            reader = PyPDF2.PdfReader(f)
+            text_parts = []
+            for i, p in enumerate(reader.pages):
                 try:
-                    page = reader.pages[page_num]
-                    text += page.extract_text() + " "
+                    t = p.extract_text()
+                    if t:
+                        text_parts.append(t)
                 except Exception as e:
-                    console.print(f"[yellow]Предупреждение: ошибка чтения страницы {page_num + 1} из {pdf_path.name}: {e}[/yellow]")
-                    continue
-            
+                    console.print(f"[yellow]Предупреждение: ошибка чтения страницы {i+1} {pdf_path.name}: {e}[/yellow]")
+            text = " ".join(text_parts)
             if not text.strip():
-                console.print(f"[yellow]Предупреждение: не удалось извлечь текст из {pdf_path.name}[/yellow]")
                 return None
-            
-            # Сначала ищем потенциальные ISIN с разрывами
-            flexible_matches = ISIN_FLEXIBLE_PATTERN.findall(text)
-            
-            for match in flexible_matches:
-                # Нормализуем: убираем пробелы и дефисы
-                normalized = re.sub(r'[\s\-]+', '', match)
-                # Проверяем строгим паттерном
-                if ISIN_PATTERN.match(normalized):
-                    return normalized
-            
-            # Если гибкий поиск не дал результатов, ищем прямые совпадения
-            direct_matches = ISIN_PATTERN.findall(text)
-            if direct_matches:
-                return direct_matches[0]
-            
+
+            for m in ISIN_FLEXIBLE_PATTERN.findall(text):
+                cand = normalize_isin_candidate(m)
+                if ISIN_PATTERN.search(cand) and isin_checksum_valid(cand):
+                    return cand
+
+            m2 = ISIN_PATTERN.search(text)
+            if m2:
+                cand = normalize_isin_candidate(m2.group(0))
+                if isin_checksum_valid(cand):
+                    return cand
+
             return None
-            
     except Exception as e:
         console.print(f"[red]Ошибка чтения PDF {pdf_path.name}: {e}[/red]")
         return None
@@ -177,15 +208,15 @@ def move_pdf_with_conflict_prompt(src: Path, dst_dir: Path) -> Optional[Path]:
     """
     Перемещает файл в dst_dir с обработкой конфликтов имён.
     
-    При конфликте имени задаёт интерактивный вопрос (y/n) с показом ISIN 
-    обоих файлов. При y удаляет новый файл, при n пропускает перенос.
+    При конфликте имени задаёт интерактивный вопрос с показом ISIN обоих файлов.
+    Всегда перемещает файл в TS, при отказе удалять создаёт безопасное имя.
     
     Args:
         src: Путь к исходному файлу
         dst_dir: Папка назначения
         
     Returns:
-        Optional[Path]: Фактический путь нового расположения или None
+        Optional[Path]: Фактический путь нового расположения или None при ошибке
     """
     dst_path = dst_dir / src.name
     
@@ -216,13 +247,29 @@ def move_pdf_with_conflict_prompt(src: Path, dst_dir: Path) -> Optional[Path]:
             console.print(f"[red]Ошибка удаления файла {src.name}: {e}[/red]")
             return None
     else:
-        console.print(f"[cyan]Файл {src.name} пропущен[/cyan]")
-        return None
+        # Создаём безопасное имя и перемещаем
+        base_name = src.stem
+        suffix = 1
+        while dst_path.exists():
+            safe_name = f"{base_name}_conflict_{suffix}.pdf"
+            dst_path = dst_dir / safe_name
+            suffix += 1
+        
+        try:
+            shutil.move(str(src), str(dst_path))
+            console.print(f"[cyan]Файл перемещён с безопасным именем: {dst_path.name}[/cyan]")
+            return dst_path
+        except Exception as e:
+            console.print(f"[red]Ошибка перемещения файла {src.name}: {e}[/red]")
+            return None
 
 
 def normalize_filenames_in_ts(ts_dir: Path) -> int:
     """
     Переименовывает все PDF в TS так, чтобы имя было ISIN.pdf.
+    
+    При конфликте имён сразу спрашивает о удалении дубликата,
+    если отказ - добавляет временный суффикс (будет обработан на этапе дублей).
     
     Args:
         ts_dir: Путь к папке TS
@@ -255,11 +302,23 @@ def normalize_filenames_in_ts(ts_dir: Path) -> int:
                 
                 # Обработка конфликта имён при переименовании
                 if target_path.exists() and target_path != pdf_file:
-                    suffix = 1
-                    while target_path.exists():
-                        target_name = f"{isin}_{suffix}.pdf"
-                        target_path = ts_dir / target_name
-                        suffix += 1
+                    console.print(f"[yellow]Конфликт при переименовании {pdf_file.name} -> {target_name}[/yellow]")
+                    console.print(f"[yellow]Файл {target_name} уже существует[/yellow]")
+                    
+                    response = input(f"Удалить текущий файл {pdf_file.name}? (y/n): ").strip().lower()
+                    
+                    if response == 'y':
+                        pdf_file.unlink()
+                        console.print(f"[green]Файл {pdf_file.name} удалён[/green]")
+                        processed_count += 1
+                        continue
+                    else:
+                        # Добавляем временный суффикс (будет обработан на этапе дублей)
+                        suffix = 1
+                        while target_path.exists():
+                            target_name = f"{isin}_{suffix}.pdf"
+                            target_path = ts_dir / target_name
+                            suffix += 1
                 
                 pdf_file.rename(target_path)
                 console.print(f"[green]Переименован: {pdf_file.name} -> {target_name}[/green]")
@@ -526,3 +585,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
