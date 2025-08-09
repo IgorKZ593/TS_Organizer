@@ -579,6 +579,37 @@ def move_ts_to_data_work_with_archive(data_in_ts: Path, data_work: Path, archive
         console.print(f"[red]Ошибка перемещения папки TS: {e}[/red]")
 
 
+def show_data_work_ts_contents(data_work: Path) -> None:
+    """
+    Отображает содержимое папки Data_work/TS.
+    
+    Выводит список всех файлов в папке (только файлы, без подпапок)
+    и общее количество. При отсутствии папки выводит предупреждение.
+    
+    Args:
+        data_work: Путь к папке Data_work
+    """
+    ts_folder = data_work / "TS"
+    
+    if not ts_folder.exists():
+        console.print("[yellow]Папка Data_work\\TS отсутствует[/yellow]")
+        return
+    
+    try:
+        # Получаем список только файлов (без подпапок)
+        files = [f for f in ts_folder.iterdir() if f.is_file()]
+        
+        if files:
+            console.print("\n[cyan]Содержимое Data_work\\TS:[/cyan]")
+            for file in files:
+                console.print(f"  {file.name}")
+        
+        console.print(f"[bold green]Итого файлов в Data_work\\TS: {len(files)}[/bold green]")
+        
+    except Exception as e:
+        console.print(f"[red]Ошибка чтения папки Data_work\\TS: {e}[/red]")
+
+
 def main() -> None:
     """
     Оркестрация всех шагов обработки PDF файлов.
@@ -591,6 +622,7 @@ def main() -> None:
     5. Сверка ISIN
     6. Обработка дублей
     7. Финальный перенос в Data_work
+    8. Отображение финального результата
     """
     console.print("[bold cyan]Запуск TS Cleaner[/bold cyan]")
     console.print(f"[cyan]Рабочая папка: {PROJECT_ROOT}[/cyan]")
@@ -639,6 +671,9 @@ def main() -> None:
         # Шаг 6: Перенос в Data_work
         console.print("\n[bold cyan]Шаг 6: Перенос в Data_work[/bold cyan]")
         move_ts_to_data_work_with_archive(ts_folder, DATA_WORK, TS_ARCHIVE)
+        
+        # Отображение содержимого финальной папки
+        show_data_work_ts_contents(DATA_WORK)
         
         console.print("\n[bold green]Обработка завершена успешно![/bold green]")
         
