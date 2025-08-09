@@ -85,6 +85,33 @@ def isin_checksum_valid(code: str) -> bool:
     return total % 10 == 0
 
 
+def check_and_cleanup_existing_ts(data_in: Path) -> None:
+    """
+    Проверяет существование папки Data_in/TS перед началом работы.
+    
+    При обнаружении существующей папки спрашивает пользователя
+    о удалении и при согласии удаляет рекурсивно.
+    
+    Args:
+        data_in: Путь к папке Data_in
+    """
+    ts_folder = data_in / "TS"
+    
+    if ts_folder.exists():
+        console.print(f"[yellow]Папка TS уже существует в Data_in[/yellow]")
+        response = input("Папка TS уже существует в Data_in. Удалить её перед началом работы? (y/n): ").strip().lower()
+        
+        if response == 'y':
+            try:
+                shutil.rmtree(ts_folder)
+                console.print("[green]Папка TS удалена[/green]")
+            except Exception as e:
+                console.print(f"[red]Ошибка удаления папки TS: {e}[/red]")
+                raise
+        else:
+            console.print("[cyan]Папка TS оставлена без изменений[/cyan]")
+
+
 def ensure_ts_folder(data_in: Path) -> Path:
     """
     Создаёт и возвращает путь к папке Data_in/TS.
@@ -557,17 +584,21 @@ def main() -> None:
     Оркестрация всех шагов обработки PDF файлов.
     
     Выполняет полный конвейер:
-    1. Подготовка папки TS
-    2. Перенос PDF файлов
-    3. Нормализация имён
-    4. Сверка ISIN
-    5. Обработка дублей
-    6. Финальный перенос в Data_work
+    1. Проверка существующей папки TS
+    2. Подготовка папки TS
+    3. Перенос PDF файлов
+    4. Нормализация имён
+    5. Сверка ISIN
+    6. Обработка дублей
+    7. Финальный перенос в Data_work
     """
     console.print("[bold cyan]Запуск TS Cleaner[/bold cyan]")
     console.print(f"[cyan]Рабочая папка: {PROJECT_ROOT}[/cyan]")
     
     try:
+        # Проверка существующей папки TS
+        check_and_cleanup_existing_ts(DATA_IN)
+        
         # Шаг 1: Создание папки TS
         console.print("\n[bold cyan]Шаг 1: Подготовка папки TS[/bold cyan]")
         ts_folder = ensure_ts_folder(DATA_IN)
