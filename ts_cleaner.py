@@ -338,38 +338,31 @@ def normalize_filenames_in_ts(ts_dir: Path) -> int:
 def interactive_fix_mismatched_isin(ts_dir: Path) -> None:
     """
     Сверяет ISIN из имени и из содержимого PDF.
-    
-    При расхождении задаёт вопрос (y/n) и при согласии переименовывает
-    файл в соответствии с ISIN из содержимого.
-    
-    Args:
-        ts_dir: Путь к папке TS
+    Если ISIN в имени отсутствует, но найден в содержимом — предлагает
+    переименовать в <content_isin>.pdf.
+    При расхождении имя/содержимое — предлагает заменить на ISIN из содержимого.
     """
     try:
-        pdf_files = [f for f in ts_dir.iterdir() 
-                    if f.is_file() and f.suffix.lower() == '.pdf']
-        
+        pdf_files = [f for f in ts_dir.iterdir()
+                     if f.is_file() and f.suffix.lower() == '.pdf']
+
         for pdf_file in pdf_files:
             try:
                 name_isin = extract_isin_from_name(pdf_file.name)
                 content_isin = extract_isin_from_pdf(pdf_file)
-                
-                if not name_isin:
-                    console.print(f"[yellow]Файл {pdf_file.name}: ISIN в имени не определён[/yellow]")
-                    continue
-                
-                if not content_isin:
-                    console.print(f"[yellow]Файл {pdf_file.name}: ISIN в содержимом не найден[/yellow]")
-                    continue
-                
-                if name_isin != content_isin:
-                    console.print(f"[yellow]Обнаружено несоответствие: имя файла {name_isin}, в TermSheet указан {content_isin}[/yellow]")
-                    response = input("Заменить имя на ISIN из TermSheet? (y/n): ").strip().lower()
-                    
+
+                # 1) Имя без ISIN, но в содержимом ISIN найден
+                if not name_isin and content_isin:
+                    console.print(
+                        f"[yellow]Файл {pdf_file.name}: в имени ISIN не найден, в TermSheet указан {content_isin}[/yellow]"
+                    )
+                    response = input(
+                        f"Переименовать в {content_isin}.pdf? (y/n): "
+                    ).strip().lower()
                     if response == 'y':
                         target_name = f"{content_isin}.pdf"
                         target_path = ts_dir / target_name
-                        
+
                         # Обработка конфликта имён
                         if target_path.exists() and target_path != pdf_file:
                             suffix = 1
@@ -377,16 +370,57 @@ def interactive_fix_mismatched_isin(ts_dir: Path) -> None:
                                 target_name = f"{content_isin}_{suffix}.pdf"
                                 target_path = ts_dir / target_name
                                 suffix += 1
-                        
+
                         pdf_file.rename(target_path)
-                        console.print(f"[green]Переименован: {pdf_file.name} -> {target_name}[/green]")
+                        console.print(
+                            f"[green]Переименован: {pdf_file.name} -> {target_name}[/green]"
+                        )
                     else:
-                        console.print(f"[cyan]Файл {pdf_file.name} оставлен без изменений[/cyan]")
-                        
+                        console.print(
+                            f"[cyan]Файл {pdf_file.name} оставлен без изменений[/cyan]"
+                        )
+                    continue  # к следующему файлу
+
+                # 2) Имя содержит ISIN, но в содержимом не найден
+                if name_isin and not content_isin:
+                    console.print(
+                        f"[yellow]Файл {pdf_file.name}: ISIN в содержимом не найден[/yellow]"
+                    )
+                    continue
+
+                # 3) Оба найдены, но разные
+                if name_isin and content_isin and name_isin != content_isin:
+                    console.print(
+                        f"[yellow]Обнаружено несоответствие: имя файла {name_isin}, в TermSheet указан {content_isin}[/yellow]"
+                    )
+                    response = input(
+                        "Заменить имя на ISIN из TermSheet? (y/n): "
+                    ).strip().lower()
+                    if response == 'y':
+                        target_name = f"{content_isin}.pdf"
+                        target_path = ts_dir / target_name
+
+                        # Обработка конфликта имён
+                        if target_path.exists() and target_path != pdf_file:
+                            suffix = 1
+                            while target_path.exists():
+                                target_name = f"{content_isin}_{suffix}.pdf"
+                                target_path = ts_dir / target_name
+                                suffix += 1
+
+                        pdf_file.rename(target_path)
+                        console.print(
+                            f"[green]Переименован: {pdf_file.name} -> {target_name}[/green]"
+                        )
+                    else:
+                        console.print(
+                            f"[cyan]Файл {pdf_file.name} оставлен без изменений[/cyan]"
+                        )
+                # 4) Все остальные случаи (оба пусты или совпадают) — ничего не делаем
             except Exception as e:
                 console.print(f"[red]Ошибка обработки файла {pdf_file.name}: {e}[/red]")
                 continue
-                
+
     except Exception as e:
         console.print(f"[red]Ошибка сверки ISIN: {e}[/red]")
 
